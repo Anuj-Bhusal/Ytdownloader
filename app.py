@@ -89,7 +89,7 @@ def get_video_info():
         if not info:
             return jsonify({'error': 'Could not fetch video info'}), 400
         
-        # Process formats - only include merged/complete formats
+        # Process formats - include both merged formats and audio-only
         formats = []
         seen_qualities = set()
         
@@ -104,7 +104,7 @@ def get_video_info():
             abr = f.get('abr')
             vbr = f.get('vbr') or f.get('tbr')
             
-            # Only include formats with BOTH video and audio (playable standalone)
+            # Video formats with audio (merged/progressive)
             if vcodec != 'none' and acodec != 'none' and height:
                 quality_key = f"video_{height}"
                 if quality_key not in seen_qualities:
@@ -112,7 +112,6 @@ def get_video_info():
                     # Estimate size if missing
                     estimated_size = filesize
                     if not estimated_size and vbr and info.get('duration'):
-                        # Estimate: bitrate (kbps) * duration (s) / 8 = bytes
                         estimated_size = int((vbr * 1000 / 8) * info.get('duration'))
                     
                     formats.append({
@@ -145,12 +144,12 @@ def get_video_info():
                         'filesize': int(estimated_size) if estimated_size else None,
                     })
         
-        # Add smart combined formats only for common resolutions
-        # Check if higher qualities exist before adding them
+        # Add smart combined formats for video
         max_height = max([f.get('height', 0) for f in formats if f['type'] == 'video'], default=0)
         
-        # Only add "Best" if we have video formats
-        if formats:
+        # Always add "Best Quality" option for video if any video formats exist
+        video_formats = [f for f in formats if f['type'] == 'video']
+        if video_formats:
             formats.insert(0, {
                 'format_id': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best',
                 'type': 'video',
@@ -178,21 +177,21 @@ def get_video_info():
                     'has_audio': True,
                 })
         
+        # Sort formats
         video_formats = sorted([f for f in formats if f['type'] == 'video'], 
                               key=lambda x: x.get('height', 0), reverse=True)
         audio_formats = sorted([f for f in formats if f['type'] == 'audio'], 
                               key=lambda x: x.get('bitrate', 0), reverse=True)
         
-        # Only add best audio if we have audio formats
-        if any(f['type'] == 'audio' for f in formats):
-            audio_formats.insert(0, {
-                'format_id': 'bestaudio/best',
-                'type': 'audio',
-                'quality': 'Best Audio (MP3)',
-                'bitrate': 9999,
-                'ext': 'mp3',
-                'filesize': None,
-            })
+        # Always add "Best Audio" option at the top
+        audio_formats.insert(0, {
+            'format_id': 'bestaudio/best',
+            'type': 'audio',
+            'quality': 'Best Audio (MP3)',
+            'bitrate': 9999,
+            'ext': 'mp3',
+            'filesize': None,
+        })
         
         return jsonify({
             'title': str(info.get('title', 'Unknown')),
