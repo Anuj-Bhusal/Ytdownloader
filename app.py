@@ -108,14 +108,14 @@ def get_video_info():
                 if quality_key not in seen_qualities:
                     seen_qualities.add(quality_key)
                     formats.append({
-                        'format_id': format_id,
+                        'format_id': str(format_id),
                         'type': 'video',
-                        'quality': f'{height}p',
-                        'height': height,
-                        'width': width,
-                        'ext': ext,
-                        'filesize': format_filesize(filesize),
-                        'has_audio': acodec != 'none',
+                        'quality': f'{int(height)}p',
+                        'height': int(height),
+                        'width': int(width) if width else 0,
+                        'ext': str(ext),
+                        'filesize': format_filesize(filesize) if filesize else None,
+                        'has_audio': bool(acodec != 'none'),
                     })
             
             elif acodec != 'none' and vcodec == 'none' and abr:
@@ -123,12 +123,12 @@ def get_video_info():
                 if quality_key not in seen_qualities:
                     seen_qualities.add(quality_key)
                     formats.append({
-                        'format_id': format_id,
+                        'format_id': str(format_id),
                         'type': 'audio',
                         'quality': f'{int(abr)} kbps',
                         'bitrate': int(abr),
-                        'ext': ext,
-                        'filesize': format_filesize(filesize),
+                        'ext': str(ext),
+                        'filesize': format_filesize(filesize) if filesize else None,
                     })
         
         # Add combined format options
@@ -171,10 +171,10 @@ def get_video_info():
         })
         
         return jsonify({
-            'title': info.get('title', 'Unknown'),
+            'title': str(info.get('title', 'Unknown')),
             'duration': int(info.get('duration') or 0),
-            'channel': info.get('uploader', 'Unknown'),
-            'thumbnail': info.get('thumbnail', ''),
+            'channel': str(info.get('uploader', 'Unknown')),
+            'thumbnail': str(info.get('thumbnail') or ''),
             'formats': video_formats + audio_formats,
         })
         
