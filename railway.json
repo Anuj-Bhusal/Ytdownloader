@@ -6,13 +6,13 @@
     "nixpacksPlan": {
       "phases": {
         "setup": {
-          "nixPkgs": ["python312", "ffmpeg"]
+          "nixPkgs": ["python312", "python312Packages.pip", "ffmpeg"]
         }
       }
     }
   },
   "deploy": {
-    "startCommand": "python -m gunicorn app:app --bind 0.0.0.0:$PORT",
+    "startCommand": "gunicorn app:app --bind 0.0.0.0:$PORT",
     "healthcheckPath": "/health",
     "restartPolicyType": "ON_FAILURE"
   }
