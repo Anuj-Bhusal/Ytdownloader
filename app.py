@@ -144,29 +144,34 @@ def get_video_info():
                         'filesize': int(estimated_size) if estimated_size else None,
                     })
         
-        # Add smart combined formats for video
+        # Add smart combined formats for video (for high-res that need merging)
         max_height = max([f.get('height', 0) for f in formats if f['type'] == 'video'], default=0)
         
-        # Always add "Best Quality" option for video if any video formats exist
-        video_formats = [f for f in formats if f['type'] == 'video']
-        if video_formats:
-            formats.insert(0, {
-                'format_id': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best',
-                'type': 'video',
-                'quality': 'Best Quality',
-                'height': 9999,
-                'ext': 'mp4',
-                'filesize': None,
-                'has_audio': True,
-            })
+        # Get existing video heights to avoid duplicates
+        existing_heights = set(f.get('height', 0) for f in formats if f['type'] == 'video')
         
-        # Add combined formats only for resolutions that exist or lower
+        # Always add "Best Quality" option for video
+        formats.insert(0, {
+            'format_id': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best',
+            'type': 'video',
+            'quality': 'Best Quality',
+            'height': 9999,
+            'ext': 'mp4',
+            'filesize': None,
+            'has_audio': True,
+        })
+        
+        # Add combined formats for standard resolutions
+        # Only add if that exact resolution doesn't already exist
         for res in [2160, 1440, 1080, 720, 480, 360]:
-            if res > max_height:
-                continue  # Skip if higher than available
-            
             quality_key = f"combined_{res}"
-            if quality_key not in seen_qualities:
+            
+            # Skip if we already have this exact resolution from native formats
+            if res in existing_heights:
+                continue
+            
+            # Only add if this resolution is possible (at or below max available)
+            if res <= max_height or res == 2160:  # Always try 2160p
                 formats.append({
                     'format_id': f'bestvideo[height<={res}][ext=mp4]+bestaudio[ext=m4a]/best[height<={res}]',
                     'type': 'video',
