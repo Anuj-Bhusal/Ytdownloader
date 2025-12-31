@@ -114,7 +114,7 @@ def get_video_info():
                         'height': int(height),
                         'width': int(width) if width else 0,
                         'ext': str(ext),
-                        'filesize': format_filesize(filesize) if filesize else None,
+                        'filesize': int(filesize) if filesize else None,
                         'has_audio': bool(acodec != 'none'),
                     })
             
@@ -128,7 +128,7 @@ def get_video_info():
                         'quality': f'{int(abr)} kbps',
                         'bitrate': int(abr),
                         'ext': str(ext),
-                        'filesize': format_filesize(filesize) if filesize else None,
+                        'filesize': int(filesize) if filesize else None,
                     })
         
         # Add combined format options
@@ -138,7 +138,7 @@ def get_video_info():
             'quality': 'Best Quality',
             'height': 9999,
             'ext': 'mp4',
-            'filesize': 'Auto',
+            'filesize': None,
             'has_audio': True,
         })
         
@@ -152,7 +152,7 @@ def get_video_info():
                     'quality': f'{res}p',
                     'height': res,
                     'ext': 'mp4',
-                    'filesize': 'Auto',
+                    'filesize': None,
                     'has_audio': True,
                 })
         
@@ -167,7 +167,7 @@ def get_video_info():
             'quality': 'Best Audio (MP3)',
             'bitrate': 9999,
             'ext': 'mp3',
-            'filesize': 'Auto',
+            'filesize': None,
         })
         
         return jsonify({
