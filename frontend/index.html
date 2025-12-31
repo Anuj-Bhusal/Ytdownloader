@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YouTube Downloader</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🎬 YouTube Downloader</h1>
+            <p>Download videos in any resolution or audio format</p>
+        </header>
+
+        <main>
+            <!-- URL Input Section -->
+            <div class="input-section">
+                <div class="input-wrapper">
+                    <input 
+                        type="text" 
+                        id="urlInput" 
+                        placeholder="Paste YouTube URL here..."
+                        autocomplete="off"
+                    >
+                    <button id="fetchBtn" onclick="fetchVideoInfo()">
+                        <span class="btn-text">Get Video</span>
+                        <span class="btn-loader" style="display: none;"></span>
+                    </button>
+                </div>
+                <p class="hint">Supports: youtube.com, youtu.be links</p>
+            </div>
+
+            <!-- Error Message -->
+            <div id="errorMsg" class="error-msg" style="display: none;"></div>
+
+            <!-- Video Info Section -->
+            <div id="videoInfo" class="video-info" style="display: none;">
+                <div class="video-preview">
+                    <img id="thumbnail" src="" alt="Video Thumbnail">
+                    <div class="video-details">
+                        <h2 id="videoTitle"></h2>
+                        <p id="videoDuration"></p>
+                        <p id="videoChannel"></p>
+                    </div>
+                </div>
+
+                <!-- Format Selection -->
+                <div class="format-section">
+                    <h3>Select Format</h3>
+                    <div class="format-tabs">
+                        <button class="tab-btn active" data-tab="video" onclick="switchTab('video')">
+                            📹 Video
+                        </button>
+                        <button class="tab-btn" data-tab="audio" onclick="switchTab('audio')">
+                            🎵 Audio Only
+                        </button>
+                    </div>
+
+                    <!-- Video Formats -->
+                    <div id="videoFormats" class="formats-list">
+                        <div class="format-loading">Loading formats...</div>
+                    </div>
+
+                    <!-- Audio Formats -->
+                    <div id="audioFormats" class="formats-list" style="display: none;">
+                        <div class="format-loading">Loading formats...</div>
+                    </div>
+                </div>
+
+                <!-- Download Button -->
+                <button id="downloadBtn" class="download-btn" onclick="downloadVideo()" disabled>
+                    <span class="btn-text">⬇️ Download</span>
+                    <span class="btn-loader" style="display: none;"></span>
+                </button>
+                
+                <div id="downloadProgress" class="progress-section" style="display: none;">
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="progressFill"></div>
+                    </div>
+                    <p id="progressText">Preparing download...</p>
+                </div>
+            </div>
+        </main>
+
+        <footer>
+            <p>Made with ❤️ | Works on all devices</p>
+        </footer>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
