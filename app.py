@@ -172,7 +172,7 @@ def get_video_info():
         
         return jsonify({
             'title': info.get('title', 'Unknown'),
-            'duration': info.get('duration', 0),
+            'duration': int(info.get('duration') or 0),
             'channel': info.get('uploader', 'Unknown'),
             'thumbnail': info.get('thumbnail', ''),
             'formats': video_formats + audio_formats,
