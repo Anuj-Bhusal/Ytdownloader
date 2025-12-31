@@ -92,6 +92,7 @@ def get_video_info():
         # Process formats - include both merged formats and audio-only
         formats = []
         seen_qualities = set()
+        available_video_heights = set()  # Track all available video resolutions
         
         for f in info.get('formats', []):
             format_id = f.get('format_id')
@@ -103,6 +104,10 @@ def get_video_info():
             acodec = f.get('acodec', 'none')
             abr = f.get('abr')
             vbr = f.get('vbr') or f.get('tbr')
+            
+            # Track all available video resolutions (including video-only streams)
+            if vcodec != 'none' and height:
+                available_video_heights.add(int(height))
             
             # Video formats with audio (merged/progressive)
             if vcodec != 'none' and acodec != 'none' and height:
@@ -145,9 +150,7 @@ def get_video_info():
                     })
         
         # Add smart combined formats for video (for high-res that need merging)
-        max_height = max([f.get('height', 0) for f in formats if f['type'] == 'video'], default=0)
-        
-        # Get existing video heights to avoid duplicates
+        # Get existing merged video heights to avoid duplicates
         existing_heights = set(f.get('height', 0) for f in formats if f['type'] == 'video')
         
         # Always add "Best Quality" option for video
@@ -161,24 +164,22 @@ def get_video_info():
             'has_audio': True,
         })
         
-        # Add combined formats for standard resolutions
-        # Only add if that exact resolution doesn't already exist
+        # Add combined formats ONLY for resolutions that actually exist
+        # (where we have video-only streams but no merged format)
         for res in [2160, 1440, 1080, 720, 480, 360]:
-            quality_key = f"combined_{res}"
-            
-            # Skip if we already have this exact resolution from native formats
+            # Skip if we already have a merged format at this resolution
             if res in existing_heights:
                 continue
             
-            # Only add if this resolution is possible (at or below max available)
-            if res <= max_height or res == 2160:  # Always try 2160p
+            # Only add if yt-dlp has video streams at this resolution
+            if res in available_video_heights:
                 formats.append({
                     'format_id': f'bestvideo[height<={res}][ext=mp4]+bestaudio[ext=m4a]/best[height<={res}]',
                     'type': 'video',
                     'quality': f'{res}p',
                     'height': res,
                     'ext': 'mp4',
-                    'filesize': None,
+                    'filesize': None,  # Can't know size until merge
                     'has_audio': True,
                 })
         
