@@ -153,17 +153,6 @@ def get_video_info():
         # Get existing merged video heights to avoid duplicates
         existing_heights = set(f.get('height', 0) for f in formats if f['type'] == 'video')
         
-        # Always add "Best Quality" option for video
-        formats.insert(0, {
-            'format_id': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best',
-            'type': 'video',
-            'quality': 'Best Quality',
-            'height': 9999,
-            'ext': 'mp4',
-            'filesize': None,
-            'has_audio': True,
-        })
-        
         # Add combined formats ONLY for resolutions that actually exist
         # (where we have video-only streams but no merged format)
         for res in [2160, 1440, 1080, 720, 480, 360]:
