@@ -89,7 +89,7 @@ def get_video_info():
         if not info:
             return jsonify({'error': 'Could not fetch video info'}), 400
         
-        # Process formats
+        # Process formats - only include merged/complete formats
         formats = []
         seen_qualities = set()
         
@@ -102,11 +102,19 @@ def get_video_info():
             vcodec = f.get('vcodec', 'none')
             acodec = f.get('acodec', 'none')
             abr = f.get('abr')
+            vbr = f.get('vbr') or f.get('tbr')
             
-            if vcodec != 'none' and height:
+            # Only include formats with BOTH video and audio (playable standalone)
+            if vcodec != 'none' and acodec != 'none' and height:
                 quality_key = f"video_{height}"
                 if quality_key not in seen_qualities:
                     seen_qualities.add(quality_key)
+                    # Estimate size if missing
+                    estimated_size = filesize
+                    if not estimated_size and vbr and info.get('duration'):
+                        # Estimate: bitrate (kbps) * duration (s) / 8 = bytes
+                        estimated_size = int((vbr * 1000 / 8) * info.get('duration'))
+                    
                     formats.append({
                         'format_id': str(format_id),
                         'type': 'video',
@@ -114,40 +122,54 @@ def get_video_info():
                         'height': int(height),
                         'width': int(width) if width else 0,
                         'ext': str(ext),
-                        'filesize': int(filesize) if filesize else None,
-                        'has_audio': bool(acodec != 'none'),
+                        'filesize': int(estimated_size) if estimated_size else None,
+                        'has_audio': True,
                     })
             
+            # Audio-only formats
             elif acodec != 'none' and vcodec == 'none' and abr:
                 quality_key = f"audio_{int(abr)}"
                 if quality_key not in seen_qualities:
                     seen_qualities.add(quality_key)
+                    # Estimate audio size
+                    estimated_size = filesize
+                    if not estimated_size and abr and info.get('duration'):
+                        estimated_size = int((abr * 1000 / 8) * info.get('duration'))
+                    
                     formats.append({
                         'format_id': str(format_id),
                         'type': 'audio',
                         'quality': f'{int(abr)} kbps',
                         'bitrate': int(abr),
                         'ext': str(ext),
-                        'filesize': int(filesize) if filesize else None,
+                        'filesize': int(estimated_size) if estimated_size else None,
                     })
         
-        # Add combined format options
-        formats.insert(0, {
-            'format_id': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best',
-            'type': 'video',
-            'quality': 'Best Quality',
-            'height': 9999,
-            'ext': 'mp4',
-            'filesize': None,
-            'has_audio': True,
-        })
+        # Add smart combined formats only for common resolutions
+        # Check if higher qualities exist before adding them
+        max_height = max([f.get('height', 0) for f in formats if f['type'] == 'video'], default=0)
         
+        # Only add "Best" if we have video formats
+        if formats:
+            formats.insert(0, {
+                'format_id': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best',
+                'type': 'video',
+                'quality': 'Best Quality',
+                'height': 9999,
+                'ext': 'mp4',
+                'filesize': None,
+                'has_audio': True,
+            })
+        
+        # Add combined formats only for resolutions that exist or lower
         for res in [2160, 1440, 1080, 720, 480, 360]:
-            format_str = f'bestvideo[height<={res}][ext=mp4]+bestaudio[ext=m4a]/best[height<={res}]'
+            if res > max_height:
+                continue  # Skip if higher than available
+            
             quality_key = f"combined_{res}"
             if quality_key not in seen_qualities:
                 formats.append({
-                    'format_id': format_str,
+                    'format_id': f'bestvideo[height<={res}][ext=mp4]+bestaudio[ext=m4a]/best[height<={res}]',
                     'type': 'video',
                     'quality': f'{res}p',
                     'height': res,
@@ -161,14 +183,16 @@ def get_video_info():
         audio_formats = sorted([f for f in formats if f['type'] == 'audio'], 
                               key=lambda x: x.get('bitrate', 0), reverse=True)
         
-        audio_formats.insert(0, {
-            'format_id': 'bestaudio/best',
-            'type': 'audio',
-            'quality': 'Best Audio (MP3)',
-            'bitrate': 9999,
-            'ext': 'mp3',
-            'filesize': None,
-        })
+        # Only add best audio if we have audio formats
+        if any(f['type'] == 'audio' for f in formats):
+            audio_formats.insert(0, {
+                'format_id': 'bestaudio/best',
+                'type': 'audio',
+                'quality': 'Best Audio (MP3)',
+                'bitrate': 9999,
+                'ext': 'mp3',
+                'filesize': None,
+            })
         
         return jsonify({
             'title': str(info.get('title', 'Unknown')),
@@ -198,13 +222,18 @@ def download_video():
             return jsonify({'error': 'URL is required'}), 400
         
         is_audio = 'bestaudio' in format_id and 'bestvideo' not in format_id
-        output_template = os.path.join(TEMP_DIR, '%(title)s.%(ext)s')
+        
+        # Create unique temp filename
+        import uuid
+        temp_id = str(uuid.uuid4())[:8]
+        output_template = os.path.join(TEMP_DIR, f'yt_dl_{temp_id}_%(title)s.%(ext)s')
         
         ydl_opts = get_ydl_opts()
         ydl_opts.update({
             'format': format_id,
             'outtmpl': output_template,
             'merge_output_format': 'mp4' if not is_audio else None,
+            'progress_hooks': [],  # Disable progress for speed
         })
         
         if is_audio:
