@@ -12,7 +12,7 @@ from flask_cors import CORS
 import yt_dlp
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, expose_headers=['Content-Disposition'])  # Expose Content-Disposition for filename
 
 # Config
 TEMP_DIR = tempfile.gettempdir()
@@ -250,7 +250,10 @@ def download_video():
         if not os.path.exists(filename):
             return jsonify({'error': 'Download failed - file not found'}), 500
         
-        safe_title = re.sub(r'[^\w\s-]', '', info.get('title', 'video'))[:100]
+        # Create clean filename
+        safe_title = re.sub(r'[^\w\s-]', '', info.get('title', 'video'))[:100].strip()
+        if not safe_title:
+            safe_title = 'video'
         ext = 'mp3' if is_audio else 'mp4'
         download_name = f"{safe_title}.{ext}"
         
@@ -260,6 +263,9 @@ def download_video():
             download_name=download_name,
             mimetype='audio/mpeg' if is_audio else 'video/mp4'
         )
+        
+        # Ensure Content-Disposition header is properly set
+        response.headers['Content-Disposition'] = f'attachment; filename="{download_name}"'
         
         @response.call_on_close
         def cleanup():
