@@ -46,9 +46,15 @@ def get_video_info():
             'noplaylist': True,
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['ios', 'android'],
-                    'player_skip': ['webpage', 'configs'],
+                    'player_client': ['mediaconnect', 'web_creator', 'ios'],
+                    'player_skip': ['webpage', 'js'],
+                    'skip': ['dash', 'hls'],
                 }
+            },
+            'http_headers': {
+                'User-Agent': 'com.google.ios.youtube/19.29.1 (iPhone16,2; U; CPU iOS 17_5_1 like Mac OS X;)',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'en-us,en;q=0.5',
             },
         }
         
@@ -182,9 +188,15 @@ def download_video():
             'merge_output_format': 'mp4' if not is_audio else None,
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['ios', 'android'],
-                    'player_skip': ['webpage', 'configs'],
+                    'player_client': ['mediaconnect', 'web_creator', 'ios'],
+                    'player_skip': ['webpage', 'js'],
+                    'skip': ['dash', 'hls'],
                 }
+            },
+            'http_headers': {
+                'User-Agent': 'com.google.ios.youtube/19.29.1 (iPhone16,2; U; CPU iOS 17_5_1 like Mac OS X;)',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'en-us,en;q=0.5',
             },
         }
         
