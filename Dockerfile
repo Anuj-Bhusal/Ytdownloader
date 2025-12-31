@@ -15,8 +15,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY . .
 
+# Ensure cookies.txt has correct permissions
+RUN chmod 644 cookies.txt || true
+
 # Expose port
 EXPOSE 5000
 
-# Start command
-CMD ["gunicorn", "app:app", "--bind", "0.0.0.0:5000"]
+# Start command with increased timeout for large downloads
+CMD ["gunicorn", "app:app", "--bind", "0.0.0.0:5000", "--timeout", "300", "--workers", "2"]
