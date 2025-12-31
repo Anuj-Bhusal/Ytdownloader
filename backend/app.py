@@ -5,16 +5,53 @@ Flask API for fetching video info and downloading videos
 
 import os
 import re
+import time
 import tempfile
-from flask import Flask, request, jsonify, send_file, Response
+from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 import yt_dlp
 
 app = Flask(__name__)
-CORS(app)  # Enable CORS for all routes
+CORS(app)
 
-# Temp directory for downloads
+# Config
 TEMP_DIR = tempfile.gettempdir()
+COOKIE_FILE = os.path.join(os.path.dirname(__file__), 'cookies.txt')
+
+# Rate limiting (simple in-memory)
+REQUEST_LOG = {}
+RATE_LIMIT = 10  # requests per minute per IP
+
+
+def check_rate_limit(ip):
+    """Simple rate limiting"""
+    now = time.time()
+    if ip not in REQUEST_LOG:
+        REQUEST_LOG[ip] = []
+    
+    # Clean old entries
+    REQUEST_LOG[ip] = [t for t in REQUEST_LOG[ip] if now - t < 60]
+    
+    if len(REQUEST_LOG[ip]) >= RATE_LIMIT:
+        return False
+    
+    REQUEST_LOG[ip].append(now)
+    return True
+
+
+def get_ydl_opts():
+    """Base yt-dlp options with cookie authentication"""
+    opts = {
+        'quiet': True,
+        'no_warnings': True,
+        'noplaylist': True,
+    }
+    
+    # Use cookies if file exists
+    if os.path.exists(COOKIE_FILE):
+        opts['cookiefile'] = COOKIE_FILE
+    
+    return opts
 
 
 def format_filesize(bytes_size):
@@ -31,6 +68,11 @@ def format_filesize(bytes_size):
 @app.route('/api/info', methods=['POST'])
 def get_video_info():
     """Fetch video information and available formats"""
+    # Rate limit check
+    client_ip = request.headers.get('X-Forwarded-For', request.remote_addr)
+    if not check_rate_limit(client_ip):
+        return jsonify({'error': 'Rate limit exceeded. Please wait.'}), 429
+    
     try:
         data = request.get_json()
         url = data.get('url')
@@ -38,25 +80,8 @@ def get_video_info():
         if not url:
             return jsonify({'error': 'URL is required'}), 400
         
-        # yt-dlp options for fetching info only
-        ydl_opts = {
-            'quiet': True,
-            'no_warnings': True,
-            'extract_flat': False,
-            'noplaylist': True,
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['mediaconnect', 'web_creator', 'ios'],
-                    'player_skip': ['webpage', 'js'],
-                    'skip': ['dash', 'hls'],
-                }
-            },
-            'http_headers': {
-                'User-Agent': 'com.google.ios.youtube/19.29.1 (iPhone16,2; U; CPU iOS 17_5_1 like Mac OS X;)',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language': 'en-us,en;q=0.5',
-            },
-        }
+        ydl_opts = get_ydl_opts()
+        ydl_opts['extract_flat'] = False
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -76,9 +101,8 @@ def get_video_info():
             filesize = f.get('filesize') or f.get('filesize_approx')
             vcodec = f.get('vcodec', 'none')
             acodec = f.get('acodec', 'none')
-            abr = f.get('abr')  # Audio bitrate
+            abr = f.get('abr')
             
-            # Video formats (must have video codec)
             if vcodec != 'none' and height:
                 quality_key = f"video_{height}"
                 if quality_key not in seen_qualities:
@@ -94,7 +118,6 @@ def get_video_info():
                         'has_audio': acodec != 'none',
                     })
             
-            # Audio-only formats
             elif acodec != 'none' and vcodec == 'none' and abr:
                 quality_key = f"audio_{int(abr)}"
                 if quality_key not in seen_qualities:
@@ -108,7 +131,7 @@ def get_video_info():
                         'filesize': format_filesize(filesize),
                     })
         
-        # Add combined format options (best video + best audio)
+        # Add combined format options
         formats.insert(0, {
             'format_id': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best',
             'type': 'video',
@@ -119,7 +142,6 @@ def get_video_info():
             'has_audio': True,
         })
         
-        # Add common resolutions
         for res in [2160, 1440, 1080, 720, 480, 360]:
             format_str = f'bestvideo[height<={res}][ext=mp4]+bestaudio[ext=m4a]/best[height<={res}]'
             quality_key = f"combined_{res}"
@@ -134,13 +156,11 @@ def get_video_info():
                     'has_audio': True,
                 })
         
-        # Sort formats
         video_formats = sorted([f for f in formats if f['type'] == 'video'], 
                               key=lambda x: x.get('height', 0), reverse=True)
         audio_formats = sorted([f for f in formats if f['type'] == 'audio'], 
                               key=lambda x: x.get('bitrate', 0), reverse=True)
         
-        # Add best audio option
         audio_formats.insert(0, {
             'format_id': 'bestaudio/best',
             'type': 'audio',
@@ -165,6 +185,10 @@ def get_video_info():
 @app.route('/api/download', methods=['POST'])
 def download_video():
     """Download video with specified format"""
+    client_ip = request.headers.get('X-Forwarded-For', request.remote_addr)
+    if not check_rate_limit(client_ip):
+        return jsonify({'error': 'Rate limit exceeded. Please wait.'}), 429
+    
     try:
         data = request.get_json()
         url = data.get('url')
@@ -173,34 +197,16 @@ def download_video():
         if not url:
             return jsonify({'error': 'URL is required'}), 400
         
-        # Determine if audio-only
         is_audio = 'bestaudio' in format_id and 'bestvideo' not in format_id
-        
-        # Create temp file path
         output_template = os.path.join(TEMP_DIR, '%(title)s.%(ext)s')
         
-        ydl_opts = {
+        ydl_opts = get_ydl_opts()
+        ydl_opts.update({
             'format': format_id,
             'outtmpl': output_template,
-            'noplaylist': True,
-            'quiet': True,
-            'no_warnings': True,
             'merge_output_format': 'mp4' if not is_audio else None,
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['mediaconnect', 'web_creator', 'ios'],
-                    'player_skip': ['webpage', 'js'],
-                    'skip': ['dash', 'hls'],
-                }
-            },
-            'http_headers': {
-                'User-Agent': 'com.google.ios.youtube/19.29.1 (iPhone16,2; U; CPU iOS 17_5_1 like Mac OS X;)',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language': 'en-us,en;q=0.5',
-            },
-        }
+        })
         
-        # Add audio postprocessor if audio only
         if is_audio:
             ydl_opts['postprocessors'] = [{
                 'key': 'FFmpegExtractAudio',
@@ -211,24 +217,20 @@ def download_video():
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             
-            # Get the actual filename
             if is_audio:
                 filename = ydl.prepare_filename(info).rsplit('.', 1)[0] + '.mp3'
             else:
                 filename = ydl.prepare_filename(info)
-                # Handle merged files
                 if not os.path.exists(filename):
                     filename = filename.rsplit('.', 1)[0] + '.mp4'
         
         if not os.path.exists(filename):
             return jsonify({'error': 'Download failed - file not found'}), 500
         
-        # Get safe filename for download
         safe_title = re.sub(r'[^\w\s-]', '', info.get('title', 'video'))[:100]
         ext = 'mp3' if is_audio else 'mp4'
         download_name = f"{safe_title}.{ext}"
         
-        # Send file and cleanup
         response = send_file(
             filename,
             as_attachment=True,
@@ -236,7 +238,6 @@ def download_video():
             mimetype='audio/mpeg' if is_audio else 'video/mp4'
         )
         
-        # Schedule file cleanup (in production, use a proper cleanup mechanism)
         @response.call_on_close
         def cleanup():
             try:
@@ -254,7 +255,8 @@ def download_video():
 @app.route('/health', methods=['GET'])
 def health_check():
     """Health check endpoint"""
-    return jsonify({'status': 'ok'})
+    cookie_status = 'found' if os.path.exists(COOKIE_FILE) else 'missing'
+    return jsonify({'status': 'ok', 'cookies': cookie_status})
 
 
 if __name__ == '__main__':
