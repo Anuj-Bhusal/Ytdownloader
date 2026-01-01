@@ -339,9 +339,20 @@ def start_download():
 def download_progress(job_id):
     """SSE endpoint for real-time progress updates"""
     def generate():
+        # Wait a bit for job to be created (race condition fix)
+        max_wait = 10  # Wait up to 10 seconds for job
+        waited = 0
+        while job_id not in DOWNLOAD_JOBS and waited < max_wait:
+            time.sleep(0.5)
+            waited += 0.5
+        
+        if job_id not in DOWNLOAD_JOBS:
+            yield f"data: {json.dumps({'phase': 'error', 'error': 'Job not found or expired'})}\n\n"
+            return
+        
         while True:
             if job_id not in DOWNLOAD_JOBS:
-                yield f"data: {json.dumps({'error': 'Job not found'})}\n\n"
+                yield f"data: {json.dumps({'phase': 'error', 'error': 'Job expired'})}\n\n"
                 break
             
             job = DOWNLOAD_JOBS[job_id]
