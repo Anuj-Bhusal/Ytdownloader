@@ -22,4 +22,5 @@ RUN chmod 644 cookies.txt || true
 EXPOSE 5000
 
 # Start command with increased timeout for large downloads (10 minutes)
-CMD ["gunicorn", "app:app", "--bind", "0.0.0.0:5000", "--timeout", "600", "--workers", "2"]
+# Using 1 worker to ensure in-memory job storage works across requests
+CMD ["gunicorn", "app:app", "--bind", "0.0.0.0:5000", "--timeout", "600", "--workers", "1", "--threads", "4"]
