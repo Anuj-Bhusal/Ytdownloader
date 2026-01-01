@@ -141,6 +141,7 @@ def download_worker(job_id, url, format_id):
         job['message'] = 'Connecting to YouTube...'
         
         is_audio = 'bestaudio' in format_id and 'bestvideo' not in format_id
+        job['is_audio'] = is_audio  # Set early so frontend knows
         
         output_template = os.path.join(TEMP_DIR, f'yt_dl_{job_id}_%(title)s.%(ext)s')
         
