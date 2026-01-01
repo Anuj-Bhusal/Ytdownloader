@@ -1,18 +1,21 @@
 """
 YouTube Downloader API Backend
-Flask API for fetching video info and downloading videos
+Flask API with real-time progress tracking via Server-Sent Events (SSE)
 """
 
 import os
 import re
 import time
 import tempfile
-from flask import Flask, request, jsonify, send_file
+import uuid
+import json
+import threading
+from flask import Flask, request, jsonify, send_file, Response, stream_with_context
 from flask_cors import CORS
 import yt_dlp
 
 app = Flask(__name__)
-CORS(app, expose_headers=['Content-Disposition'])  # Expose Content-Disposition for filename
+CORS(app, expose_headers=['Content-Disposition'])
 
 # Config
 TEMP_DIR = tempfile.gettempdir()
@@ -21,6 +24,9 @@ COOKIE_FILE = os.path.join(os.path.dirname(__file__), 'cookies.txt')
 # Rate limiting (simple in-memory)
 REQUEST_LOG = {}
 RATE_LIMIT = 10  # requests per minute per IP
+
+# Download jobs storage (in-memory, for production use Redis)
+DOWNLOAD_JOBS = {}
 
 
 def check_rate_limit(ip):
@@ -47,7 +53,6 @@ def get_ydl_opts():
         'noplaylist': True,
     }
     
-    # Use cookies if file exists
     if os.path.exists(COOKIE_FILE):
         opts['cookiefile'] = COOKIE_FILE
     
@@ -65,10 +70,111 @@ def format_filesize(bytes_size):
     return f"{bytes_size:.1f} TB"
 
 
+def create_progress_hook(job_id):
+    """Create a progress hook for yt-dlp that updates job status"""
+    def hook(d):
+        if job_id not in DOWNLOAD_JOBS:
+            return
+        
+        job = DOWNLOAD_JOBS[job_id]
+        
+        if d['status'] == 'downloading':
+            downloaded = d.get('downloaded_bytes', 0)
+            total = d.get('total_bytes') or d.get('total_bytes_estimate', 0)
+            speed = d.get('speed', 0)
+            eta = d.get('eta', 0)
+            
+            job['phase'] = 'downloading'
+            job['downloaded_bytes'] = downloaded
+            job['total_bytes'] = total
+            job['speed'] = speed or 0
+            job['eta'] = eta or 0
+            
+            if total > 0:
+                job['progress'] = min(int((downloaded / total) * 100), 99)
+            
+        elif d['status'] == 'finished':
+            job['phase'] = 'processing'
+            job['progress'] = 95
+            job['message'] = 'Merging video and audio...'
+            
+        elif d['status'] == 'error':
+            job['phase'] = 'error'
+            job['error'] = str(d.get('error', 'Download failed'))
+    
+    return hook
+
+
+def download_worker(job_id, url, format_id):
+    """Background worker that downloads the video"""
+    job = DOWNLOAD_JOBS[job_id]
+    
+    try:
+        job['phase'] = 'starting'
+        job['message'] = 'Connecting to YouTube...'
+        
+        is_audio = 'bestaudio' in format_id and 'bestvideo' not in format_id
+        
+        output_template = os.path.join(TEMP_DIR, f'yt_dl_{job_id}_%(title)s.%(ext)s')
+        
+        ydl_opts = get_ydl_opts()
+        ydl_opts.update({
+            'format': format_id,
+            'outtmpl': output_template,
+            'merge_output_format': 'mp4' if not is_audio else None,
+            'progress_hooks': [create_progress_hook(job_id)],
+        })
+        
+        if is_audio:
+            ydl_opts['postprocessors'] = [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '320',
+            }]
+        
+        job['phase'] = 'downloading'
+        job['message'] = 'Downloading from YouTube...'
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            
+            if is_audio:
+                filename = ydl.prepare_filename(info).rsplit('.', 1)[0] + '.mp3'
+            else:
+                filename = ydl.prepare_filename(info)
+                if not os.path.exists(filename):
+                    filename = filename.rsplit('.', 1)[0] + '.mp4'
+        
+        if not os.path.exists(filename):
+            raise Exception('Download failed - file not found')
+        
+        # Create clean filename
+        safe_title = re.sub(r'[^\w\s-]', '', info.get('title', 'video'))[:100].strip()
+        if not safe_title:
+            safe_title = 'video'
+        ext = 'mp3' if is_audio else 'mp4'
+        download_name = f"{safe_title}.{ext}"
+        
+        # Get actual file size
+        actual_size = os.path.getsize(filename)
+        
+        job['phase'] = 'ready'
+        job['progress'] = 100
+        job['filepath'] = filename
+        job['filename'] = download_name
+        job['filesize'] = actual_size
+        job['message'] = 'Ready to download!'
+        job['is_audio'] = is_audio
+        
+    except Exception as e:
+        job['phase'] = 'error'
+        job['error'] = str(e)
+        job['message'] = f'Error: {str(e)}'
+
+
 @app.route('/api/info', methods=['POST'])
 def get_video_info():
     """Fetch video information and available formats"""
-    # Rate limit check
     client_ip = request.headers.get('X-Forwarded-For', request.remote_addr)
     if not check_rate_limit(client_ip):
         return jsonify({'error': 'Rate limit exceeded. Please wait.'}), 429
@@ -89,10 +195,9 @@ def get_video_info():
         if not info:
             return jsonify({'error': 'Could not fetch video info'}), 400
         
-        # Process formats - include both merged formats and audio-only
         formats = []
         seen_qualities = set()
-        available_video_heights = set()  # Track all available video resolutions
+        available_video_heights = set()
         
         for f in info.get('formats', []):
             format_id = f.get('format_id')
@@ -105,16 +210,13 @@ def get_video_info():
             abr = f.get('abr')
             vbr = f.get('vbr') or f.get('tbr')
             
-            # Track all available video resolutions (including video-only streams)
             if vcodec != 'none' and height:
                 available_video_heights.add(int(height))
             
-            # Video formats with audio (merged/progressive)
             if vcodec != 'none' and acodec != 'none' and height:
                 quality_key = f"video_{height}"
                 if quality_key not in seen_qualities:
                     seen_qualities.add(quality_key)
-                    # Estimate size if missing
                     estimated_size = filesize
                     if not estimated_size and vbr and info.get('duration'):
                         estimated_size = int((vbr * 1000 / 8) * info.get('duration'))
@@ -130,12 +232,10 @@ def get_video_info():
                         'has_audio': True,
                     })
             
-            # Audio-only formats
             elif acodec != 'none' and vcodec == 'none' and abr:
                 quality_key = f"audio_{int(abr)}"
                 if quality_key not in seen_qualities:
                     seen_qualities.add(quality_key)
-                    # Estimate audio size
                     estimated_size = filesize
                     if not estimated_size and abr and info.get('duration'):
                         estimated_size = int((abr * 1000 / 8) * info.get('duration'))
@@ -149,18 +249,11 @@ def get_video_info():
                         'filesize': int(estimated_size) if estimated_size else None,
                     })
         
-        # Add smart combined formats for video (for high-res that need merging)
-        # Get existing merged video heights to avoid duplicates
         existing_heights = set(f.get('height', 0) for f in formats if f['type'] == 'video')
         
-        # Add combined formats ONLY for resolutions that actually exist
-        # (where we have video-only streams but no merged format)
         for res in [2160, 1440, 1080, 720, 480, 360]:
-            # Skip if we already have a merged format at this resolution
             if res in existing_heights:
                 continue
-            
-            # Only add if yt-dlp has video streams at this resolution
             if res in available_video_heights:
                 formats.append({
                     'format_id': f'bestvideo[height<={res}][ext=mp4]+bestaudio[ext=m4a]/best[height<={res}]',
@@ -168,17 +261,15 @@ def get_video_info():
                     'quality': f'{res}p',
                     'height': res,
                     'ext': 'mp4',
-                    'filesize': None,  # Can't know size until merge
+                    'filesize': None,
                     'has_audio': True,
                 })
         
-        # Sort formats
         video_formats = sorted([f for f in formats if f['type'] == 'video'], 
                               key=lambda x: x.get('height', 0), reverse=True)
         audio_formats = sorted([f for f in formats if f['type'] == 'audio'], 
                               key=lambda x: x.get('bitrate', 0), reverse=True)
         
-        # Always add "Best Audio" option at the top
         audio_formats.insert(0, {
             'format_id': 'bestaudio/best',
             'type': 'audio',
@@ -200,9 +291,130 @@ def get_video_info():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/download/start', methods=['POST'])
+def start_download():
+    """Start a download job and return job ID"""
+    client_ip = request.headers.get('X-Forwarded-For', request.remote_addr)
+    if not check_rate_limit(client_ip):
+        return jsonify({'error': 'Rate limit exceeded. Please wait.'}), 429
+    
+    try:
+        data = request.get_json()
+        url = data.get('url')
+        format_id = data.get('format_id', 'best')
+        
+        if not url:
+            return jsonify({'error': 'URL is required'}), 400
+        
+        # Create job
+        job_id = str(uuid.uuid4())[:12]
+        DOWNLOAD_JOBS[job_id] = {
+            'id': job_id,
+            'phase': 'queued',
+            'progress': 0,
+            'downloaded_bytes': 0,
+            'total_bytes': 0,
+            'speed': 0,
+            'eta': 0,
+            'message': 'Starting download...',
+            'error': None,
+            'filepath': None,
+            'filename': None,
+            'filesize': 0,
+            'created_at': time.time(),
+        }
+        
+        # Start download in background thread
+        thread = threading.Thread(target=download_worker, args=(job_id, url, format_id))
+        thread.daemon = True
+        thread.start()
+        
+        return jsonify({'job_id': job_id})
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/download/progress/<job_id>')
+def download_progress(job_id):
+    """SSE endpoint for real-time progress updates"""
+    def generate():
+        while True:
+            if job_id not in DOWNLOAD_JOBS:
+                yield f"data: {json.dumps({'error': 'Job not found'})}\n\n"
+                break
+            
+            job = DOWNLOAD_JOBS[job_id]
+            
+            # Send current status
+            yield f"data: {json.dumps(job)}\n\n"
+            
+            # Stop if completed or errored
+            if job['phase'] in ['ready', 'error']:
+                break
+            
+            # Clean up old jobs (older than 30 minutes)
+            if time.time() - job.get('created_at', 0) > 1800:
+                del DOWNLOAD_JOBS[job_id]
+                break
+            
+            time.sleep(0.5)  # Update every 500ms
+    
+    return Response(
+        stream_with_context(generate()),
+        mimetype='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive',
+            'X-Accel-Buffering': 'no',  # Disable nginx buffering
+        }
+    )
+
+
+@app.route('/api/download/file/<job_id>')
+def download_file(job_id):
+    """Download the completed file"""
+    if job_id not in DOWNLOAD_JOBS:
+        return jsonify({'error': 'Job not found'}), 404
+    
+    job = DOWNLOAD_JOBS[job_id]
+    
+    if job['phase'] != 'ready':
+        return jsonify({'error': 'Download not ready'}), 400
+    
+    filepath = job.get('filepath')
+    filename = job.get('filename', 'video.mp4')
+    is_audio = job.get('is_audio', False)
+    
+    if not filepath or not os.path.exists(filepath):
+        return jsonify({'error': 'File not found'}), 404
+    
+    response = send_file(
+        filepath,
+        as_attachment=True,
+        download_name=filename,
+        mimetype='audio/mpeg' if is_audio else 'video/mp4'
+    )
+    
+    response.headers['Content-Disposition'] = f'attachment; filename="{filename}"'
+    
+    @response.call_on_close
+    def cleanup():
+        try:
+            if os.path.exists(filepath):
+                os.remove(filepath)
+            if job_id in DOWNLOAD_JOBS:
+                del DOWNLOAD_JOBS[job_id]
+        except:
+            pass
+    
+    return response
+
+
+# Keep old endpoint for backward compatibility
 @app.route('/api/download', methods=['POST'])
 def download_video():
-    """Download video with specified format"""
+    """Legacy download endpoint (blocking)"""
     client_ip = request.headers.get('X-Forwarded-For', request.remote_addr)
     if not check_rate_limit(client_ip):
         return jsonify({'error': 'Rate limit exceeded. Please wait.'}), 429
@@ -217,8 +429,6 @@ def download_video():
         
         is_audio = 'bestaudio' in format_id and 'bestvideo' not in format_id
         
-        # Create unique temp filename
-        import uuid
         temp_id = str(uuid.uuid4())[:8]
         output_template = os.path.join(TEMP_DIR, f'yt_dl_{temp_id}_%(title)s.%(ext)s')
         
@@ -227,7 +437,6 @@ def download_video():
             'format': format_id,
             'outtmpl': output_template,
             'merge_output_format': 'mp4' if not is_audio else None,
-            'progress_hooks': [],  # Disable progress for speed
         })
         
         if is_audio:
@@ -250,7 +459,6 @@ def download_video():
         if not os.path.exists(filename):
             return jsonify({'error': 'Download failed - file not found'}), 500
         
-        # Create clean filename
         safe_title = re.sub(r'[^\w\s-]', '', info.get('title', 'video'))[:100].strip()
         if not safe_title:
             safe_title = 'video'
@@ -264,7 +472,6 @@ def download_video():
             mimetype='audio/mpeg' if is_audio else 'video/mp4'
         )
         
-        # Ensure Content-Disposition header is properly set
         response.headers['Content-Disposition'] = f'attachment; filename="{download_name}"'
         
         @response.call_on_close
@@ -285,7 +492,11 @@ def download_video():
 def health_check():
     """Health check endpoint"""
     cookie_status = 'found' if os.path.exists(COOKIE_FILE) else 'missing'
-    return jsonify({'status': 'ok', 'cookies': cookie_status})
+    return jsonify({
+        'status': 'ok',
+        'cookies': cookie_status,
+        'active_jobs': len(DOWNLOAD_JOBS)
+    })
 
 
 if __name__ == '__main__':
