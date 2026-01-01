@@ -10,12 +10,21 @@ import tempfile
 import uuid
 import json
 import threading
+import traceback
 from flask import Flask, request, jsonify, send_file, Response, stream_with_context
 from flask_cors import CORS
 import yt_dlp
 
 app = Flask(__name__)
-CORS(app, expose_headers=['Content-Disposition'])
+CORS(app, expose_headers=['Content-Disposition'], supports_credentials=True)
+
+# Add CORS headers to all responses including errors
+@app.after_request
+def add_cors_headers(response):
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+    return response
 
 # Config
 TEMP_DIR = tempfile.gettempdir()
@@ -403,41 +412,49 @@ def download_progress(job_id):
 @app.route('/api/download/file/<job_id>')
 def download_file(job_id):
     """Download the completed file"""
-    if job_id not in DOWNLOAD_JOBS:
-        return jsonify({'error': 'Job not found'}), 404
-    
-    job = DOWNLOAD_JOBS[job_id]
-    
-    if job['phase'] != 'ready':
-        return jsonify({'error': 'Download not ready'}), 400
-    
-    filepath = job.get('filepath')
-    filename = job.get('filename', 'video.mp4')
-    is_audio = job.get('is_audio', False)
-    
-    if not filepath or not os.path.exists(filepath):
-        return jsonify({'error': 'File not found'}), 404
-    
-    response = send_file(
-        filepath,
-        as_attachment=True,
-        download_name=filename,
-        mimetype='audio/mpeg' if is_audio else 'video/mp4'
-    )
-    
-    response.headers['Content-Disposition'] = f'attachment; filename="{filename}"'
-    
-    @response.call_on_close
-    def cleanup():
-        try:
-            if os.path.exists(filepath):
-                os.remove(filepath)
-            if job_id in DOWNLOAD_JOBS:
-                del DOWNLOAD_JOBS[job_id]
-        except:
-            pass
-    
-    return response
+    try:
+        if job_id not in DOWNLOAD_JOBS:
+            return jsonify({'error': f'Job {job_id} not found. Available: {list(DOWNLOAD_JOBS.keys())}'}), 404
+        
+        job = DOWNLOAD_JOBS[job_id]
+        
+        if job['phase'] != 'ready':
+            return jsonify({'error': f'Download not ready. Phase: {job["phase"]}'}), 400
+        
+        filepath = job.get('filepath')
+        filename = job.get('filename', 'video.mp4')
+        is_audio = job.get('is_audio', False)
+        
+        if not filepath:
+            return jsonify({'error': 'No filepath in job'}), 500
+            
+        if not os.path.exists(filepath):
+            return jsonify({'error': f'File not found at {filepath}'}), 404
+        
+        response = send_file(
+            filepath,
+            as_attachment=True,
+            download_name=filename,
+            mimetype='audio/mpeg' if is_audio else 'video/mp4'
+        )
+        
+        response.headers['Content-Disposition'] = f'attachment; filename="{filename}"'
+        
+        @response.call_on_close
+        def cleanup():
+            try:
+                if os.path.exists(filepath):
+                    os.remove(filepath)
+                if job_id in DOWNLOAD_JOBS:
+                    del DOWNLOAD_JOBS[job_id]
+            except:
+                pass
+        
+        return response
+        
+    except Exception as e:
+        print(f"Error in download_file: {traceback.format_exc()}")
+        return jsonify({'error': f'Server error: {str(e)}'}), 500
 
 
 # Keep old endpoint for backward compatibility
