@@ -84,14 +84,32 @@ def create_progress_hook(job_id):
             speed = d.get('speed', 0)
             eta = d.get('eta', 0)
             
+            # Track if this is video or audio stream
+            filename = d.get('filename', '')
+            is_audio_stream = '.m4a' in filename or '.webm' in filename and 'audio' in str(d.get('info_dict', {}).get('format', ''))
+            
+            # Keep track of cumulative downloaded for multi-stream downloads
+            if not job.get('_video_done'):
+                job['_current_stream'] = 'video'
+                if d['status'] == 'finished' or downloaded >= total > 0:
+                    job['_video_done'] = True
+                    job['_video_size'] = total
+            else:
+                job['_current_stream'] = 'audio'
+            
             job['phase'] = 'downloading'
             job['downloaded_bytes'] = downloaded
             job['total_bytes'] = total
             job['speed'] = speed or 0
             job['eta'] = eta or 0
+            job['stream'] = job.get('_current_stream', 'video')
             
             if total > 0:
                 job['progress'] = min(int((downloaded / total) * 100), 99)
+            
+            # Show which stream is downloading
+            stream_label = 'audio' if job.get('_video_done') else 'video'
+            job['message'] = f'Downloading {stream_label}...'
             
         elif d['status'] == 'finished':
             job['phase'] = 'processing'
