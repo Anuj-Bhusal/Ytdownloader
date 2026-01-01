@@ -21,5 +21,5 @@ RUN chmod 644 cookies.txt || true
 # Expose port
 EXPOSE 5000
 
-# Start command with increased timeout for large downloads
-CMD ["gunicorn", "app:app", "--bind", "0.0.0.0:5000", "--timeout", "300", "--workers", "2"]
+# Start command with increased timeout for large downloads (10 minutes)
+CMD ["gunicorn", "app:app", "--bind", "0.0.0.0:5000", "--timeout", "600", "--workers", "2"]
